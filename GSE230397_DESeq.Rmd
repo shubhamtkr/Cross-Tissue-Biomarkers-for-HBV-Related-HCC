@@ -1,0 +1,226 @@
+---
+title: "Analysis of HBV Dataset - GSE230397"
+output:
+  pdf_document: default
+  html_document:
+    theme: cosmo
+    df_print: kable
+date: 'Compiled: `r format(Sys.Date(), "%B %d, %Y")`'
+---
+
+```{r}
+library(tidyverse)
+library(DESeq2)
+
+```
+
+```{r}
+counts <- read.csv("/data1/23D1628/dh607_project/datasets/hbv_hcc_liver/GSE230397_raw_counts_processed.csv")
+# make row names as unique
+rownames(counts) <- make.unique(counts$Symbol)
+counts$Symbol <- NULL
+
+```
+
+```{r}
+ncol(counts)
+```
+```{r}
+metadata <- read.csv("/data1/23D1628/dh607_project/datasets/hbv_hcc_liver/SRP434609_metadata_processed.csv", row.names=1)
+
+```
+
+```{r}
+head(metadata)
+```
+
+
+```{r}
+nrow(metadata)
+```
+
+```{r}
+metadata$experiment_alias <- rownames(metadata)
+```
+
+```{r}
+ncol(counts)
+```
+
+```{r}
+nrow(counts)
+```
+
+```{r}
+table(metadata$disease_state)
+```
+```{r}
+metadata <- metadata[rownames(metadata) %in% colnames(counts), ]
+metadata <- metadata[match(colnames(counts), rownames(metadata)), ]
+```
+
+
+```{r}
+metadata_filtered <- metadata[metadata$disease_state %in% c("IA", "HC"), ]
+```
+
+```{r}
+nrow(metadata_filtered)
+```
+
+```{r}
+rownames(metadata_filtered)
+```
+
+```{r}
+# Get indices of rows to be removed
+kept_indices <- which(metadata$disease_state %in% c("IA", "HC"))
+
+# Remove columns with the same names as these indices in 'counts'
+counts_filtered <- counts[, kept_indices]
+```
+
+```{r}
+ncol(counts_filtered)
+```
+```{r}
+sort(colnames(counts_filtered))
+```
+
+
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = counts_filtered,
+                              colData = metadata_filtered,
+                              design= ~ disease_state )
+smallestGroupSize <- 3
+keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
+dds <- dds[keep,]
+```
+```{r}
+dds <- DESeq(dds)
+```
+
+```{r}
+vsd <- vst(dds, blind=FALSE)
+```
+
+```{r}
+class(counts)
+```
+```{r}
+df <- data.frame(mean = rowMeans(counts), variance = matrixStats::rowVars(counts %>% as.matrix()))
+
+ggplot(df, aes(mean, variance)) + geom_point() + ggtitle("variance vs mean") + scale_x_log10() + scale_y_log10()
+```
+```{r}
+df.vsd <- data.frame(mean = rowMeans(assay(vsd)),
+variance = matrixStats::rowVars(assay(vsd) %>% as.matrix()))
+
+ggplot(df.vsd, aes(mean, variance)) + geom_point() + ggtitle("variance vs mean post variance stabilizing transform") + scale_x_log10() + scale_y_log10()
+```
+
+```{r}
+df <- data.frame(mean = log1p(rowMeans(counts)),
+variance = matrixStats::rowVars(log1p( counts %>% as.matrix())))
+
+ggplot(df, aes(mean, variance)) + geom_point() + ggtitle("variance vs mean for log transform") + scale_x_log10() + scale_y_log10()
+
+
+```
+
+
+```{r}
+plotPCA(vsd, intgroup=c("disease_state"))
+```
+#DE Analysis
+
+```{r}
+resultsNames(dds)
+```
+
+
+```{r}
+?results
+```
+
+```{r}
+de_results <- results(dds,  name = "disease_state_IA_vs_HC")
+head(de_results)
+```
+
+
+```{r}
+hist(de_results$padj, breaks = 50, main = "Histogram of Adjusted P-values", xlab = "Adjusted P-values", col = "lightblue")
+```
+### Genes with significant changes in expression levels for HC vs. IA.
+
+```{r}
+results.filtered <- de_results %>% as.data.frame() %>% dplyr::filter(padj<0.05) %>% dplyr::arrange(padj)
+head(results.filtered)
+```
+
+
+```{r}
+results.filtered$gene <- rownames(results.filtered)
+```
+
+```{r}
+head(results.filtered)
+```
+
+### Upregulated genes with significant changes in expression levels for IA vs. HC.
+
+```{r}
+results.upreg <- results.filtered %>% filter(log2FoldChange>0)
+head(results.upreg)
+```
+
+```{r}
+plotCounts(dds, gene="KMT2E-AS1", intgroup = "disease_state")
+```
+### Downregulated genes with significant changes in expression levels for IA vs. HC.
+
+```{r}
+results.downreg <- results.filtered %>% filter(log2FoldChange<0)
+head(results.downreg)
+```
+
+```{r}
+plotCounts(dds, gene="PRPF8", intgroup = "disease_state")
+```
+
+#Functional Enrichment
+
+```{r}
+library(enrichR) # make sure this library is installed  to do GO enrichments
+
+# define a custom function to carry out enrichment
+DoEnrichment <- function(genes) {
+  library(enrichR)
+  dbs <- c("GO_Molecular_Function_2021", "GO_Cellular_Component_2021", "GO_Biological_Process_2021")
+  enriched <- enrichR::enrichr(genes, dbs)
+  return(enriched)
+}
+
+de.pos <- results.upreg %>%
+  filter(log2FoldChange > 0) %>%
+  filter(padj < 0.1) %>%
+  pull(gene)
+
+de.neg <- results.downreg %>%
+  filter(log2FoldChange < 0) %>%
+  filter(padj < 0.1) %>%
+  pull(gene)
+
+
+enrichment.pos <- DoEnrichment(genes = de.pos)
+enrichment.neg <- DoEnrichment(genes = de.neg)
+
+
+plotEnrich(df = enrichment.pos$GO_Biological_Process_2021, showTerms = 7) + ggtitle("IA HBV Upregulated")
+
+
+plotEnrich(df = enrichment.neg$GO_Biological_Process_2021, showTerms = 7) + ggtitle("IA HBV Downregulated")
+```
+

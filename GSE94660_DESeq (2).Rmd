@@ -1,0 +1,156 @@
+---
+title: "Analysis of HBV-HCC Dataset - GSE94660"
+output:
+  pdf_document: default
+  html_document:
+    theme: cosmo
+    df_print: kable
+date: 'Compiled: `r format(Sys.Date(), "%B %d, %Y")`'
+---
+
+```{r}
+library(tidyverse)
+library(DESeq2)
+
+```
+
+```{r}
+counts <- read.csv("/data1/23D1628/dh607_project/datasets/hbv_hcc_liver/raw_counts_processed.csv")
+# make row names as unique
+rownames(counts) <- make.unique(counts$Symbol)
+counts$Symbol <- NULL
+
+```
+
+```{r}
+ncol(counts)
+```
+```{r}
+metadata <- read.csv("/data1/23D1628/dh607_project/datasets/hbv_hcc_liver/SRP099053_metadata_processed.csv", row.names=1)
+metadata$tissue <- gsub(" ", "_", metadata$tissue)
+metadata$tissue <- gsub("-", "_", metadata$tissue)
+```
+
+```{r}
+head(metadata)
+```
+
+```{r}
+rownames(metadata)
+```
+
+```{r}
+nrow(metadata)
+```
+
+```{r}
+metadata$experiment_alias <- rownames(metadata)
+```
+
+```{r}
+ncol(counts)
+```
+
+```{r}
+nrow(counts)
+```
+
+```{r}
+table(metadata$tissue)
+```
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = counts,
+                              colData = metadata,
+                              design= ~ tissue )
+smallestGroupSize <- 3
+keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
+dds <- dds[keep,]
+```
+```{r}
+dds <- DESeq(dds)
+```
+
+```{r}
+vsd <- vst(dds, blind=FALSE)
+```
+
+```{r}
+class(counts)
+```
+```{r}
+df <- data.frame(mean = rowMeans(counts), variance = matrixStats::rowVars(counts %>% as.matrix()))
+
+ggplot(df, aes(mean, variance)) + geom_point() + ggtitle("variance vs mean") + scale_x_log10() + scale_y_log10()
+```
+```{r}
+df.vsd <- data.frame(mean = rowMeans(assay(vsd)),
+variance = matrixStats::rowVars(assay(vsd) %>% as.matrix()))
+
+ggplot(df.vsd, aes(mean, variance)) + geom_point() + ggtitle("variance vs mean post variance stabilizing transform") + scale_x_log10() + scale_y_log10()
+```
+
+```{r}
+df <- data.frame(mean = log1p(rowMeans(counts)),
+variance = matrixStats::rowVars(log1p( counts %>% as.matrix())))
+
+ggplot(df, aes(mean, variance)) + geom_point() + ggtitle("variance vs mean for log transform") + scale_x_log10() + scale_y_log10()
+
+
+```
+
+
+```{r}
+plotPCA(vsd, intgroup=c("tissue"))
+```
+#DE Analysis
+
+```{r}
+resultsNames(dds)
+```
+
+
+```{r}
+?results
+```
+
+```{r}
+de_results <- results(dds,  name = "tissue_Tumor_tissue_vs_Non_neoplastic_liver_tissue")
+head(de_results)
+```
+
+
+```{r}
+hist(de_results$padj, breaks = 50, main = "Histogram of Adjusted P-values", xlab = "Adjusted P-values", col = "lightblue")
+```
+### Genes with significant changes in expression levels for tumor vs. non-neoplastic tissue.
+
+```{r}
+results.filtered <- de_results %>% as.data.frame() %>% dplyr::filter(padj<0.05) %>% dplyr::arrange(padj)
+head(results.filtered)
+```
+### Upregulated genes with significant changes in expression levels for tumor vs. non-neoplastic tissue.
+
+```{r}
+results.upreg <- results.filtered %>% filter(log2FoldChange>0)
+head(results.upreg)
+```
+
+```{r}
+plotCounts(dds, gene="CENPF", intgroup = "tissue")
+```
+### Downregulated genes with significant changes in expression levels for tumor vs. non-neoplastic tissue.
+
+```{r}
+results.downreg <- results.filtered %>% filter(log2FoldChange<0)
+head(results.downreg)
+```
+
+```{r}
+plotCounts(dds, gene="TTC36-AS1", intgroup = "tissue")
+```
+```{r}
+genes_of_interest_upregulated <- c("CENPF", "PRC1", "PLVAP", "TOP2A")
+genes_of_interest_downregulated <- c("TTC36-AS1", "KCNN2", "PLVAB", "LCAT")
+```
+
