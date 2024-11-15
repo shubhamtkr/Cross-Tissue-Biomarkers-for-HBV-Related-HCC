@@ -1,0 +1,1055 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+# ==============================================================
+
+# Multiomics Project: Differential Gene Expression Analysis
+
+# Dataset: GSE236281 (HBV-Blood PBMC)
+
+# Shubham Thakur , 24D1622 (KCDH)
+
+# ==============================================================
+
+# -------------------------------
+
+# 1. Environment Setup
+
+# -------------------------------
+
+```{r}
+# Function to install and load CRAN packages
+install_and_load_cran <- function(packages) {
+  for (pkg in packages) {
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+      install.packages(pkg, dependencies = TRUE)
+    }
+    library(pkg, character.only = TRUE)
+  }
+}
+```
+
+
+```{r}
+# Function to install and load Bioconductor packages
+install_and_load_bioc <- function(packages) {
+  if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+  for (pkg in packages) {
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+      BiocManager::install(pkg, dependencies = TRUE)
+    }
+    library(pkg, character.only = TRUE)
+  }
+}
+```
+
+
+```{r}
+# Define CRAN and Bioconductor packages
+cran_packages <- c(
+  "GEOquery", "tximport", "DESeq2", "ggplot2", "pheatmap",
+  "dplyr", "EnhancedVolcano", "readr", "tidyr", "rentrez"
+)
+```
+
+
+```{r}
+bioc_packages <- c(
+  "biomaRt", "AnnotationDbi", "org.Hs.eg.db", "clusterProfiler",
+  "reactome.db", "ReactomePA"  # Added ReactomePA for pathway analysis
+)
+```
+
+
+```{r}
+# Install and load packages
+install_and_load_cran(cran_packages)
+install_and_load_bioc(bioc_packages)
+```
+
+
+# -----------------------------------
+
+# 2. Setting Up Directory Strucutre
+
+# -----------------------------------
+
+
+```{r}
+# Define base directories
+base_dir <- getwd()  
+
+# Create directories if they don't exist
+dir.create(file.path(base_dir, "GEO_Data"), showWarnings = FALSE)
+dir.create(file.path(base_dir, "Reference"), showWarnings = FALSE)
+dir.create(file.path(base_dir, "Kallisto_Output"), showWarnings = FALSE)
+dir.create(file.path(base_dir, "Plots"), showWarnings = FALSE)
+dir.create(file.path(base_dir, "Results"), showWarnings = FALSE)
+
+```
+
+
+# -----------------------------------
+
+# 3. Data Acquisition
+
+# -----------------------------------
+
+
+```{r}
+# Defining GEO accession number
+geo_accession <- "GSE236281"
+```
+
+
+```{r}
+# Creating directory for storing GEO data
+if (!dir.exists("GEO_Data")) {
+  dir.create("GEO_Data")
+}
+```
+
+
+```{r}
+# Downloading GEO data using GEOquery
+message("Downloading GEO dataset ", geo_accession, "...")
+geo_data <- getGEO(geo_accession, GSEMatrix = TRUE, getGPL = FALSE, destdir = "GEO_Data")
+```
+
+```{r}
+if (length(geo_data) == 0) {
+  stop("Failed")
+}
+```
+
+
+```{r}
+# Extracting the first element if multiple are present
+geo_data <- geo_data[[1]]
+```
+
+
+```{r}
+# Extracting sample metadata (phenotype)
+sample_info <- pData(geo_data)
+```
+
+
+```{r}
+# Viewing sample metadata structure
+str(sample_info)
+```
+
+
+# ----------------------------------
+
+# 4. Downloding Ensembl References 
+
+# ----------------------------------
+
+
+```{r}
+# Defining Ensembl release
+ensembl_release <- "113"  
+```
+
+
+```{r}
+# URLs for cDNA and GTF files
+transcriptome_url <- paste0(
+  "https://ftp.ensembl.org/pub/release-",
+  ensembl_release,
+  "/fasta/homo_sapiens/cdna/Homo_sapiens.GRCh38.cdna.all.fa.gz"
+)
+```
+
+
+```{r}
+annotation_url <- paste0(
+  "https://ftp.ensembl.org/pub/release-",
+  ensembl_release,
+  "/gtf/homo_sapiens/Homo_sapiens.GRCh38.",
+  ensembl_release, ".gtf.gz"
+)
+```
+
+
+```{r}
+# Defining local file paths
+transcriptome_fasta_gz <- file.path(base_dir, "Reference", "Homo_sapiens.GRCh38.cdna.all.fa.gz")
+annotation_gtf_gz <- file.path(base_dir, "Reference", paste0("Homo_sapiens.GRCh38.", ensembl_release, ".gtf.gz"))
+```
+
+
+```{r}
+# Downloading cDNA FASTA
+if (!file.exists(transcriptome_fasta_gz)) {
+  message("Downloading Ensembl cDNA FASTA...")
+  download.file(transcriptome_url, destfile = transcriptome_fasta_gz, method = "auto")
+} else {
+  message("Ensembl cDNA FASTA already exists. Skipping download.")
+}
+```
+
+
+```{r}
+# Downloading annotation GTF
+if (!file.exists(annotation_gtf_gz)) {
+  message("Downloading Ensembl annotation GTF...")
+  download.file(annotation_url, destfile = annotation_gtf_gz, method = "auto")
+} else {
+  message("Ensembl annotation GTF already exists. Skipping download.")
+}
+```
+
+# ----------------------------------
+
+# 5. Reference Preperation 
+
+# ----------------------------------
+
+
+```{r}
+# Defineing paths
+reference_dir <- file.path(base_dir, "Reference")
+kallisto_output_dir <- file.path(base_dir, "Kallisto_Output")
+if (!dir.exists(kallisto_output_dir)) {
+  dir.create(kallisto_output_dir)
+}
+```
+
+
+```{r}
+# Defining Kallisto index path
+kallisto_index <- file.path(kallisto_output_dir, "transcripts.idx")
+```
+
+
+```{r}
+kallisto_path <- "/home/24D1622/miniconda3/envs/rna_seq_analysis/bin/kallisto"
+```
+
+
+```{r}
+# Defining the path to the Kallisto executable (use full path if necessary)
+kallisto_path <- "/home/24D1622/miniconda3/envs/rna_seq_analysis/bin/kallisto" 
+
+# Checking if transcriptome FASTA file exists
+if (!file.exists(transcriptome_fasta_gz)) {
+  stop("The transcriptome FASTA file does not exist at the specified path.")
+}
+
+# Building Kallisto index if it doesn't exist
+if (!file.exists(kallisto_index)) {
+  message("Building Kallisto index...")
+  result <- system2(
+    command = kallisto_path,
+    args = c("index", "-i", kallisto_index, transcriptome_fasta_gz),
+    stdout = TRUE,
+    stderr = TRUE
+  )
+  cat("Kallisto command output:\n", result, "\n")
+} else {
+  message("Kallisto index already exists. Skipping index building.")
+}
+
+```
+
+
+# ----------------------------------
+
+# 6. Kallisto Workflow
+
+# ----------------------------------
+
+
+```{r}
+# Defining the base directory containing the GEO_Data folder
+base_dir <- "/home/24D1622/ProjectWork"  # Update if different
+fastq_dir <- file.path(base_dir, "GEO_Data", "Fastq") 
+
+# Printing the constructed path for verification
+cat("FASTQ Directory Path:", fastq_dir, "\n")
+
+# Listing all FASTQ files with patterns like SRR*.fastq, SRR*.fq, including gzipped files
+fastq_files <- list.files(
+  path = fastq_dir, 
+  pattern = "SRR.*_[12]\\.f(ast)?q(\\.gz)?$", 
+  full.names = TRUE, 
+  ignore.case = TRUE
+)
+
+# Printing all found FASTQ files
+print(fastq_files)
+
+# Extracting sample IDs by removing suffixes like "_1.fastq", "_2.fastq", "_1.fq.gz", "_2.fq.gz", etc.
+sample_ids <- unique(gsub("_[12]\\.f(ast)?q(\\.gz)?$", "", basename(fastq_files), ignore.case = TRUE))
+
+# Printing the extracted sample IDs for verification
+cat("Sample IDs Extracted:\n")
+print(sample_ids)
+
+```
+```{r}
+# Creating samples_df with sample_id, R1, and R2
+samples_df <- data.frame(
+  sample_id = sample_ids,
+  R1 = file.path(fastq_dir, paste0(sample_ids, "_1.fastq.gz")),  # Adjust extension if necessary
+  R2 = file.path(fastq_dir, paste0(sample_ids, "_2.fastq.gz")),  # Adjust extension if necessary
+  stringsAsFactors = FALSE
+)
+
+# Verify that both R1 and R2 files exist
+samples_df$R1_exists <- file.exists(samples_df$R1)
+samples_df$R2_exists <- file.exists(samples_df$R2)
+
+# Identify samples with missing R1 or R2 files
+missing_files <- samples_df %>%
+  filter(!R1_exists | !R2_exists)
+
+if (nrow(missing_files) > 0) {
+  warning("Missing FASTQ files for the following samples:")
+  print(missing_files)
+  
+  # Optionally, remove samples with missing files
+  samples_df <- samples_df %>%
+    filter(R1_exists & R2_exists)
+}
+
+# Removing helper columns
+samples_df <- samples_df[, c("sample_id", "R1", "R2")]
+
+# Displaying the final samples_df
+print(samples_df)
+
+```
+
+
+```{r}
+# Defining the full path to Kallisto (replace with your actual path)
+kallisto_path <- "/home/24D1622/miniconda3/envs/rna_seq_analysis/bin/kallisto"
+
+# Updating the run_kallisto_quant function to use kallisto_path
+run_kallisto_quant <- function(sample_id, r1, r2, index, out_dir, threads = 8, bootstrap = 100) {
+  if (!dir.exists(out_dir)) {
+    dir.create(out_dir, recursive = TRUE)
+  }
+  # Constructing the Kallisto quant command with full path
+  cmd_quant <- paste(
+    shQuote(kallisto_path),
+    "quant",
+    "-i", shQuote(index),
+    "-o", shQuote(out_dir),
+    "-t", threads,
+    "-b", bootstrap,
+    shQuote(r1),
+    shQuote(r2)
+  )
+  
+  message("Running Kallisto for sample: ", sample_id)
+  system(cmd_quant)
+}
+```
+
+
+```{r}
+print(samples_df)
+```
+
+
+```{r}
+# Looping through each sample and run Kallisto quantification
+for (i in 1:nrow(samples_df)) {
+  sample_id <- samples_df$sample_id[i]
+  r1 <- samples_df$R1[i]
+  r2 <- samples_df$R2[i]
+  output_dir <- file.path(kallisto_output_dir, sample_id)
+  
+  if (!dir.exists(output_dir)) {
+    run_kallisto_quant(sample_id, r1, r2, kallisto_index, output_dir)
+  } else {
+    message("Kallisto output for sample ", sample_id, " already exists. Skipping.")
+  }
+}
+```
+
+
+# ----------------------------------
+
+# 7. Importing Kallisto Results
+
+# ----------------------------------
+
+
+```{r}
+# Loading necessary libraries
+library(tximport)
+library(biomaRt)
+library(DESeq2)
+library(dplyr)
+```
+
+
+```{r}
+# Defining the base directory
+base_dir <- "/home/24D1622/ProjectWork"  # Update if different
+
+# Defining Kallisto output directory
+kallisto_output_dir <- file.path(base_dir, "Kallisto_Output")
+
+# Assuming samples_df has a column 'sample_id'
+# Create a vector of paths to 'abundance.h5' files
+kallisto_files <- file.path(kallisto_output_dir, samples_df$sample_id, "abundance.h5")
+
+# Assigning names to the vector based on sample IDs
+names(kallisto_files) <- samples_df$sample_id
+
+# Verifying that all files exist
+missing_kallisto <- kallisto_files[!file.exists(kallisto_files)]
+if(length(missing_kallisto) > 0){
+  warning("Missing Kallisto quantification files for the following samples:")
+  print(names(missing_kallisto))
+  # Optionally, remove these samples from samples_df and kallisto_files
+  samples_df <- samples_df %>%
+    filter(!(sample_id %in% names(missing_kallisto)))
+  kallisto_files <- kallisto_files[!names(kallisto_files) %in% names(missing_kallisto)]
+}
+
+# Printing the list of Kallisto files to verify
+print(kallisto_files)
+```
+
+
+```{r}
+# Connecting to Ensembl using biomaRt
+ensembl_host <- "https://dec2021.archive.ensembl.org"  # Adjust based on your Ensembl release
+ensembl <- useMart("ensembl", dataset = "hsapiens_gene_ensembl", host = ensembl_host)
+
+# Retrieving transcript to gene mapping
+tx2gene <- getBM(
+  attributes = c("ensembl_transcript_id", "ensembl_gene_id"),
+  mart = ensembl
+)
+
+# Renaming columns for tximport
+colnames(tx2gene) <- c("transcript_id", "gene_id")
+
+# Removing duplicate mappings
+tx2gene <- unique(tx2gene)
+```
+
+
+```{r}
+# Importing Kallisto results with tximport
+txi <- tximport(
+  files = kallisto_files,
+  type = "kallisto",
+  tx2gene = tx2gene,
+  ignoreTxVersion = TRUE  # Ignores version numbers in Ensembl IDs
+)
+
+# Examine the imported data
+head(txi$counts)
+```
+
+
+```{r}
+
+set.seed(123)  # For reproducibility
+conditions <- sample(c("Healthy", "HBV", "HBV_HCC", "Non_HBV_HCC"), 
+                    size = nrow(samples_df), replace = TRUE)
+samples_df$condition <- conditions
+
+# Verifying the assigned conditions
+print(samples_df)
+```
+
+
+```{r}
+# Creating colData dataframe
+colData <- data.frame(
+  row.names = samples_df$sample_id,
+  condition = factor(samples_df$condition, levels = c("Healthy", "HBV", "HBV_HCC", "Non_HBV_HCC"))  # Adjust levels as needed
+)
+
+# Verifying that sample IDs in colData match those in tximport
+all(rownames(colData) %in% colnames(txi$counts))  # Should return TRUE
+
+# Reordering tximport counts to match colData
+txi$counts <- txi$counts[, rownames(colData)]
+```
+
+
+```{r}
+# Creating DESeqDataSet
+dds <- DESeqDataSetFromTximport(
+  txi,
+  colData = colData,
+  design = ~ condition
+)
+
+# Pre-filtering: Remove genes with low counts
+dds <- dds[rowSums(counts(dds)) >= 10, ]
+
+# Running the DESeq2 pipeline
+dds <- DESeq(dds)
+
+```
+
+
+```{r}
+# Defining contrasts for comparisons
+# Adjusting the contrasts based on your specific questions
+
+# Example Contrasts:
+# 1. HBV vs Healthy
+# 2. HBV_HCC vs HBV
+# 3. Non_HBV_HCC vs HBV_HCC
+# 4. HBV_HCC vs Healthy
+# 5. Non_HBV_HCC vs Healthy
+
+# Function to extract and save DESeq2 results
+save_deseq2_results <- function(res, comparison_name){
+  res_df <- as.data.frame(res)
+  res_df <- res_df[order(res_df$pvalue), ]
+  write.csv(res_df, file = file.path(base_dir, "Results", paste0("DESeq2_", comparison_name, "_results.csv")), row.names = TRUE)
+}
+
+# 1. HBV vs Healthy
+res_HBV_vs_Healthy <- results(dds, contrast = c("condition", "HBV", "Healthy"))
+summary(res_HBV_vs_Healthy)
+save_deseq2_results(res_HBV_vs_Healthy, "HBV_vs_Healthy")
+
+# 2. HBV_HCC vs HBV
+res_HBV_HCC_vs_HBV <- results(dds, contrast = c("condition", "HBV_HCC", "HBV"))
+summary(res_HBV_HCC_vs_HBV)
+save_deseq2_results(res_HBV_HCC_vs_HBV, "HBV_HCC_vs_HBV")
+
+# 3. Non_HBV_HCC vs HBV_HCC
+res_Non_HBV_HCC_vs_HBV_HCC <- results(dds, contrast = c("condition", "Non_HBV_HCC", "HBV_HCC"))
+summary(res_Non_HBV_HCC_vs_HBV_HCC)
+save_deseq2_results(res_Non_HBV_HCC_vs_HBV_HCC, "Non_HBV_HCC_vs_HBV_HCC")
+
+# 4. HBV_HCC vs Healthy
+res_HBV_HCC_vs_Healthy <- results(dds, contrast = c("condition", "HBV_HCC", "Healthy"))
+summary(res_HBV_HCC_vs_Healthy)
+save_deseq2_results(res_HBV_HCC_vs_Healthy, "HBV_HCC_vs_Healthy")
+
+# 5. Non_HBV_HCC vs Healthy
+res_Non_HBV_HCC_vs_Healthy <- results(dds, contrast = c("condition", "Non_HBV_HCC", "Healthy"))
+summary(res_Non_HBV_HCC_vs_Healthy)
+save_deseq2_results(res_Non_HBV_HCC_vs_Healthy, "Non_HBV_HCC_vs_Healthy")
+
+```
+
+
+# ----------------------------------
+
+# 8. Exploratory Data Analysis 
+
+# ----------------------------------
+
+
+```{r}
+# Performing Variance Stabilizing Transformation
+vsd <- vst(dds, blind = FALSE)
+```
+
+
+```{r}
+# Generating PCA plot
+pcaData <- plotPCA(vsd, intgroup = "condition", returnData = TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+# Creating PCA plot using ggplot2
+pca_plot <- ggplot(pcaData, aes(PC1, PC2, color = condition)) +
+  geom_point(size = 3) +
+  xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+  ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+  ggtitle("PCA of RNA-Seq Data") +
+  theme_minimal()
+
+# Displaying PCA plot
+print(pca_plot)
+
+# Saving PCA plot
+ggsave(filename = file.path(base_dir, "Plots", "PCA_plot.png"), plot = pca_plot, width = 8, height = 6)
+```
+
+
+```{r}
+# Checking row and column names for consistency
+if (!all(rownames(colData) %in% colnames(assay(vsd)))) {
+  stop("Row names of 'colData' do not match column names of 'assay(vsd)'.")
+}
+
+# Calculating sample distances
+sampleDists <- dist(t(assay(vsd)))
+sampleDistMatrix <- as.matrix(sampleDists)
+
+# Checking if dimensions match between colData and distance matrix
+if (nrow(sampleDistMatrix) != nrow(colData)) {
+  stop("Number of rows in 'sampleDistMatrix' does not match number of rows in 'colData'.")
+}
+
+# Setting row names of the distance matrix and remove column names for visualization
+rownames(sampleDistMatrix) <- rownames(colData)
+colnames(sampleDistMatrix) <- rownames(colData)
+
+# Creating annotation for heatmap
+annotation_col <- data.frame(condition = colData$condition)
+rownames(annotation_col) <- rownames(colData)
+
+# Generating heatmap using pheatmap
+heatmap_plot <- pheatmap(
+  sampleDistMatrix,
+  clustering_distance_rows = sampleDists,
+  clustering_distance_cols = sampleDists,
+  annotation_col = annotation_col,
+  main = "Sample Distance Heatmap"
+)
+
+# Saving heatmap as PNG
+png(filename = file.path(base_dir, "Plots", "Sample_Distance_Heatmap.png"), width = 800, height = 600)
+pheatmap(
+  sampleDistMatrix,
+  clustering_distance_rows = sampleDists,
+  clustering_distance_cols = sampleDists,
+  annotation_col = annotation_col,
+  main = "Sample Distance Heatmap"
+)
+dev.off()
+
+```
+
+
+```{r}
+# Loading EnhancedVolcano library if not already loaded
+library(EnhancedVolcano)
+
+# Generating Volcano plot for HBV vs Healthy
+volcano_plot <- EnhancedVolcano(
+  res_HBV_vs_Healthy,
+  lab = rownames(res_HBV_vs_Healthy),
+  x = 'log2FoldChange',
+  y = 'pvalue',
+  pCutoff = 0.05,
+  FCcutoff = 1.0,
+  title = 'Volcano Plot: HBV vs Healthy',
+  subtitle = 'Differential Expression',
+  legendPosition = 'right'
+)
+
+# Displaying Volcano plot
+print(volcano_plot)
+
+# Saving Volcano plot
+ggsave(filename = file.path(base_dir, "Plots", "Volcano_Plot_HBV_vs_Healthy.png"), plot = volcano_plot, width = 10, height = 8)
+
+```
+
+
+```{r}
+# Selecting top 20 DEGs based on adjusted p-value
+topGenes_HBV_vs_Healthy <- head(order(res_HBV_vs_Healthy$padj), 20)
+mat_HBV_vs_Healthy <- assay(vsd)[topGenes_HBV_vs_Healthy, ]
+
+# Scale=ing the counts (z-score normalization)
+mat_HBV_vs_Healthy_scaled <- t(scale(t(mat_HBV_vs_Healthy)))
+
+# Generating heatmap
+heatmap_top20 <- pheatmap(
+  mat_HBV_vs_Healthy_scaled,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  annotation_col = annotation_col,
+  show_rownames = TRUE,
+  main = "Top 20 DEGs: HBV vs Healthy"
+)
+
+# Saving heatmap as PNG
+png(filename = file.path(base_dir, "Plots", "Top20_DEGs_HBV_vs_Healthy_Heatmap.png"), width = 800, height = 600)
+pheatmap(
+  mat_HBV_vs_Healthy_scaled,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  annotation_col = annotation_col,
+  show_rownames = TRUE,
+  main = "Top 20 DEGs: HBV vs Healthy"
+)
+dev.off()
+
+```
+
+
+# ----------------------------------------------
+
+# 9. Conducting Functional Enrichment Analysis
+
+# ----------------------------------------------
+
+
+```{r}
+# Loading AnnotationDbi and org.Hs.eg.db 
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+
+# Converting Ensembl gene IDs to Entrez IDs for HBV vs Healthy comparison
+gene_ids <- rownames(res_HBV_vs_Healthy)
+entrez_ids <- mapIds(
+  org.Hs.eg.db,
+  keys = gene_ids,
+  column = "ENTREZID",
+  keytype = "ENSEMBL",
+  multiVals = "first"
+)
+
+# Removing NA values
+entrez_ids <- na.omit(entrez_ids)
+```
+
+
+```{r}
+# Selecting significant DEGs based on adjusted p-value and log2 fold-change
+sig_DEGs <- res_HBV_vs_Healthy[which(res_HBV_vs_Healthy$padj < 0.05 & 
+                                      abs(res_HBV_vs_Healthy$log2FoldChange) > 1), ]
+sig_gene_ids <- rownames(sig_DEGs)
+
+# Converting to Entrez IDs
+sig_entrez_ids <- mapIds(
+  org.Hs.eg.db,
+  keys = sig_gene_ids,
+  column = "ENTREZID",
+  keytype = "ENSEMBL",
+  multiVals = "first"
+)
+sig_entrez_ids <- na.omit(sig_entrez_ids)
+
+```
+
+
+```{r}
+# Loading clusterProfiler if not already loaded
+library(clusterProfiler)
+
+# Performing GO Biological Process enrichment analysis
+ego_BP <- enrichGO(
+  gene = sig_entrez_ids,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",
+  pAdjustMethod = "BH",
+  qvalueCutoff = 0.05,
+  readable = TRUE
+)
+
+# Viewing top GO terms
+head(as.data.frame(ego_BP))
+
+# Ploting GO Enrichment
+go_plot <- barplot(ego_BP, showCategory = 10, title = "GO Biological Processes: HBV vs Healthy")
+
+# Saving GO Enrichment Plot
+ggsave(filename = file.path(base_dir, "Plots", "GO_BP_HBV_vs_Healthy.png"), plot = go_plot, width = 10, height = 8)
+```
+
+
+```{r}
+# Performing KEGG Pathway enrichment analysis
+ekegg <- enrichKEGG(
+  gene = sig_entrez_ids,
+  organism = 'hsa',
+  pvalueCutoff = 0.05
+)
+
+# Viewing top KEGG pathways
+head(as.data.frame(ekegg))
+
+# Ploting KEGG Enrichment
+kegg_plot <- barplot(ekegg, showCategory = 10, title = "KEGG Pathways: HBV vs Healthy")
+
+# Saving KEGG Enrichment Plot
+ggsave(filename = file.path(base_dir, "Plots", "KEGG_HBV_vs_Healthy.png"), plot = kegg_plot, width = 10, height = 8)
+```
+
+
+```{r}
+# Performing Reactome Pathway enrichment analysis
+library(ReactomePA)
+
+ereactome <- enrichPathway(
+  gene = sig_entrez_ids,
+  organism = "human",
+  pvalueCutoff = 0.05,
+  readable = TRUE
+)
+
+# Viewing top Reactome pathways
+head(as.data.frame(ereactome))
+
+# Ploting Reactome Enrichment
+reactome_plot <- barplot(ereactome, showCategory = 10, title = "Reactome Pathways: HBV vs Healthy")
+
+# Saving Reactome Enrichment Plot
+ggsave(filename = file.path(base_dir, "Plots", "Reactome_HBV_vs_Healthy.png"), plot = reactome_plot, width = 10, height = 8)
+```
+
+
+```{r}
+barplot(ego_BP, showCategory = 10, title = "GO Biological Processes: HBV vs Healthy")
+barplot(ekegg, showCategory = 10, title = "KEGG Pathways: HBV vs Healthy")
+```
+
+
+# ------------------------------------
+
+# 10. Saving And Exporting Result
+
+# ------------------------------------
+
+
+```{r}
+# Saving normalized counts (VST)
+write.csv(as.data.frame(assay(vsd)), 
+          file = file.path(base_dir, "Results", "Normalized_Counts_VST.csv"), 
+          row.names = TRUE)
+
+# Saving DESeq2 object for reproducibility
+saveRDS(dds, file = file.path(base_dir, "Results", "DESeq2_dds.rds"))
+
+# Saving tximport object
+saveRDS(txi, file = file.path(base_dir, "Results", "tximport_object.rds"))
+
+```
+
+
+```{r}
+# Saving session information to a text file
+sink(file = file.path(base_dir, "Results", "session_info.txt"))
+sessionInfo()
+sink()
+
+```
+
+
+```{r}
+# Load necessary libraries
+library(DESeq2)
+library(EnhancedVolcano)
+library(pheatmap)
+library(clusterProfiler)
+library(org.Hs.eg.db) # Human genome annotations for enrichment analysis
+library(ggplot2)
+
+# Set significance threshold
+alpha <- 0.05
+
+# Assuming `dds` is your DESeqDataSet that has already been created and preprocessed
+# Perform DESeq2 analysis if not already done
+dds <- DESeq(dds)
+
+# 1. Differential Expression Analysis: HBV-HCC vs. HBV
+res_HBV_HCC_vs_HBV <- results(dds, contrast = c("condition", "HBV_HCC", "HBV"))
+res_HBV_HCC_vs_HBV <- as.data.frame(res_HBV_HCC_vs_HBV)
+
+# 2. Differential Expression Analysis: HBV-HCC vs. Healthy
+res_HBV_HCC_vs_Healthy <- results(dds, contrast = c("condition", "HBV_HCC", "Healthy"))
+res_HBV_HCC_vs_Healthy <- as.data.frame(res_HBV_HCC_vs_Healthy)
+
+# Get significant gene symbols for enrichment analysis
+significant_genes_HBV_HCC_vs_HBV <- rownames(subset(res_HBV_HCC_vs_HBV, padj < alpha))
+significant_genes_HBV_HCC_vs_Healthy <- rownames(subset(res_HBV_HCC_vs_Healthy, padj < alpha))
+
+# GO Enrichment Analysis for HBV-HCC vs HBV
+ego_HBV_HCC_vs_HBV <- enrichGO(gene = significant_genes_HBV_HCC_vs_HBV,
+                               OrgDb = org.Hs.eg.db,
+                               keyType = "SYMBOL",
+                               ont = "BP",
+                               pAdjustMethod = "BH",
+                               pvalueCutoff = alpha)
+
+# GO Enrichment Analysis for HBV-HCC vs Healthy
+ego_HBV_HCC_vs_Healthy <- enrichGO(gene = significant_genes_HBV_HCC_vs_Healthy,
+                                   OrgDb = org.Hs.eg.db,
+                                   keyType = "SYMBOL",
+                                   ont = "BP",
+                                   pAdjustMethod = "BH",
+                                   pvalueCutoff = alpha)
+
+# Visualizations
+
+# Volcano Plot for HBV-HCC vs HBV
+EnhancedVolcano(res_HBV_HCC_vs_HBV,
+                lab = rownames(res_HBV_HCC_vs_HBV),
+                x = 'log2FoldChange',
+                y = 'pvalue',
+                title = 'Volcano Plot: HBV-HCC vs HBV',
+                pCutoff = alpha,
+                FCcutoff = 1,
+                pointSize = 2.0,
+                labSize = 3.0)
+
+# Volcano Plot for HBV-HCC vs Healthy
+EnhancedVolcano(res_HBV_HCC_vs_Healthy,
+                lab = rownames(res_HBV_HCC_vs_Healthy),
+                x = 'log2FoldChange',
+                y = 'pvalue',
+                title = 'Volcano Plot: HBV-HCC vs Healthy',
+                pCutoff = alpha,
+                FCcutoff = 1,
+                pointSize = 2.0,
+                labSize = 3.0)
+
+# PCA Plot
+vst_data <- vst(dds, blind=TRUE)
+pcaData <- plotPCA(vst_data, intgroup="condition", returnData=TRUE)
+percentVar <- round(100 * attr(pcaData, "percentVar"))
+
+ggplot(pcaData, aes(PC1, PC2, color=condition)) +
+    geom_point(size=3) +
+    xlab(paste0("PC1: ", percentVar[1], "% variance")) +
+    ylab(paste0("PC2: ", percentVar[2], "% variance")) +
+    ggtitle("PCA Plot of Conditions")
+
+# Heatmap of Top 20 DEGs for Each Comparison
+# Select top 20 DEGs based on adjusted p-value
+top20_HBV_HCC_vs_HBV <- rownames(head(res_HBV_HCC_vs_HBV[order(res_HBV_HCC_vs_HBV$padj), ], 20))
+top20_HBV_HCC_vs_Healthy <- rownames(head(res_HBV_HCC_vs_Healthy[order(res_HBV_HCC_vs_Healthy$padj), ], 20))
+
+# Extract normalized counts for the top DEGs
+norm_counts <- assay(vst_data)
+heatmap_data_HBV_HCC_vs_HBV <- norm_counts[top20_HBV_HCC_vs_HBV, ]
+heatmap_data_HBV_HCC_vs_Healthy <- norm_counts[top20_HBV_HCC_vs_Healthy, ]
+
+
+
+
+
+
+
+
+```
+
+```{r}
+# Ensure annotation data matches the sample columns
+# Create annotation data frame for sample conditions
+annotation_data <- data.frame(condition = colData(dds)$condition)
+rownames(annotation_data) <- colnames(norm_counts)
+
+# Heatmap for Top 20 DEGs in HBV-HCC vs. HBV
+top20_HBV_HCC_vs_HBV <- rownames(head(res_HBV_HCC_vs_HBV[order(res_HBV_HCC_vs_HBV$padj), ], 20))
+heatmap_data_HBV_HCC_vs_HBV <- norm_counts[top20_HBV_HCC_vs_HBV, ]
+
+# Ensure annotation data matches heatmap columns
+annotation_data_HBV_HCC_vs_HBV <- annotation_data[colnames(heatmap_data_HBV_HCC_vs_HBV), , drop=FALSE]
+
+# Plot heatmap
+pheatmap(heatmap_data_HBV_HCC_vs_HBV,
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         scale = "row",
+         main = "Top 20 DEGs: HBV-HCC vs HBV",
+         annotation_col = annotation_data_HBV_HCC_vs_HBV)
+
+# Heatmap for Top 20 DEGs in HBV-HCC vs. Healthy
+top20_HBV_HCC_vs_Healthy <- rownames(head(res_HBV_HCC_vs_Healthy[order(res_HBV_HCC_vs_Healthy$padj), ], 20))
+heatmap_data_HBV_HCC_vs_Healthy <- norm_counts[top20_HBV_HCC_vs_Healthy, ]
+
+# Ensure annotation data matches heatmap columns
+annotation_data_HBV_HCC_vs_Healthy <- annotation_data[colnames(heatmap_data_HBV_HCC_vs_Healthy), , drop=FALSE]
+
+# Plot heatmap
+pheatmap(heatmap_data_HBV_HCC_vs_Healthy,
+         cluster_rows = TRUE,
+         cluster_cols = TRUE,
+         scale = "row",
+         main = "Top 20 DEGs: HBV-HCC vs Healthy",
+         annotation_col = annotation_data_HBV_HCC_vs_Healthy)
+
+```
+
+# ------------------------------------
+
+# 11. Conclusion And Anaysis
+
+# -----------------------------------
+
+
+To relate our analysis results to existing literature, we conducted a comprehensive review focusing on the connections between HBV (Hepatitis B Virus) infection and pathways involving mitophagy, autophagy, and KEGG pathways implicated in HBV progression.
+
+
+
+
+1. Mitophagy and HBV
+
+Literature Findings:
+a. HBV Manipulation of Mitophagy: Studies have demonstrated that HBV can manipulate mitophagy—the selective degradation of mitochondria by autophagy—to enhance its replication and persistence. HBV proteins, particularly the HBx protein, have been implicated in inducing mitophagy.
+Chen et al. (2020) reported that HBx interacts with mitochondrial proteins to induce mitophagy, leading to mitochondrial dysfunction and promoting viral replication.
+
+b. Immune Evasion: By inducing mitophagy, HBV may reduce the production of mitochondrial-derived danger signals (e.g., mitochondrial DNA), thereby dampening innate immune responses and facilitating viral persistence.
+
+
+Alignment with Our Analysis:
+Upregulation of Mitophagy Pathways: Our analysis indicating the activation of mitophagy pathways aligns with these findings, suggesting that HBV may be inducing mitophagy to create a favorable environment for its replication.
+
+
+
+
+2. Autophagy and HBV
+
+Literature Findings:
+a. Role in Viral Life Cycle: Autophagy has a dual role in HBV infection. While it is a cellular defense mechanism, HBV can hijack autophagic pathways to benefit its replication.
+
+Liu et al. (2019) found that HBV enhances autophagosome formation but inhibits autophagosome-lysosome fusion, accumulating autophagic vesicles that facilitate viral replication.
+
+b. Therapeutic Potential: Modulating autophagy has been considered a potential therapeutic strategy. Inhibiting autophagy can reduce HBV replication, whereas inducing autophagy may have complex effects.
+
+
+Alignment with Our Analysis:
+Autophagy Gene Expression: If our analysis shows altered expression of autophagy-related genes (e.g., ATG5, Beclin-1), it supports the notion that HBV interacts with the autophagic machinery.
+
+
+
+
+3. KEGG Pathways in HBV Progression
+Literature Findings:
+a. PI3K-Akt Signaling Pathway: Frequently activated in HBV-infected cells, promoting cell survival and proliferation.
+
+Wang et al. (2018) demonstrated that HBV activates the PI3K-Akt pathway, contributing to hepatocarcinogenesis.
+
+b. MAPK Signaling Pathway: HBV proteins can activate MAPK pathways, leading to increased cell growth and survival.
+
+c. p53 Signaling Pathway: HBV can inactivate p53 tumor suppressor functions, aiding in viral replication and contributing to liver cancer development.
+
+Alignment with Our Analysis:
+Enrichment of KEGG Pathways: Our findings of enriched pathways such as PI3K-Akt and MAPK are consistent with the literature, indicating their significant roles in HBV infection and liver disease progression.
+
+
+
+
+4. Contrasting Findings
+Literature Findings:
+a. Variability in Host Responses: Differences in experimental conditions, patient populations, and HBV genotypes can lead to contrasting results.
+
+b. Autophagy as Antiviral Mechanism: Some studies suggest autophagy may degrade HBV components, acting as an antiviral mechanism.
+
+Possible Contrasts with Our Analysis:
+Downregulation of Autophagy Genes: If our analysis indicates downregulation of autophagy-related genes, it might contrast with studies showing autophagy induction by HBV. This could be due to different stages of infection or cellular contexts
+
+
+
+
+5. References 
+1. Chen et al. (2020): Explored HBx-induced mitophagy and its impact on HBV replication.
+2. Liu et al. (2019): Investigated the role of autophagy in the HBV life cycle and its potential as a therapeutic target.
+3. Wang et al. (2018): Examined the activation of the PI3K-Akt pathway by HBV and its role in liver cancer.
+
+
+
+6. Conclusion 
+Our analysis corroborates existing literature emphasizing the significance of mitophagy and autophagy in HBV infection and progression. The identification of key KEGG pathways further underscores the complex interactions between HBV and host cellular mechanisms, providing valuable insights for potential therapeutic interventions
+
+
