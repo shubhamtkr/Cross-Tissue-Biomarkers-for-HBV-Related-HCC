@@ -8,3 +8,5 @@ tion of HBV-related HCC. This study aims to iden-
 tify gene expression patterns in blood and liver tis-
 sues to explore potential biomarkers detectable in
 blood, reducing the need for liver biopsies
+
+Collaborators : Shubham Thakur , Mayurakshi Mukherji , Prof. Saket Choudhary
