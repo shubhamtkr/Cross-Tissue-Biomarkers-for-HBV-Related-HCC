@@ -7,6 +7,6 @@ enables non-invasive diagnostics for early detection of HBV-related HCC. This st
 blood, reducing the need for liver biopsies
 
 Collaborators : Shubham Thakur - Dataset 3 , Poster , Report  
-                Mayurakshi Mukherji - Dataset 1 and Dataset 2                                                                                                                                                                   Prof. Saket Choudhary - Supervisor 
+                Mayurakshi Mukherji - Dataset 1 and Dataset 2 \n                                                                                                                                                                Prof. Saket Choudhary - Supervisor 
                 
 
